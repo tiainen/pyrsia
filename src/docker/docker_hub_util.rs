@@ -14,7 +14,7 @@
    limitations under the License.
 */
 
-use crate::docker::error_util::RegistryError;
+use crate::util::error_util::NodeError;
 use reqwest::get;
 use serde::{Deserialize, Serialize};
 
@@ -24,15 +24,13 @@ struct Bearer {
     expires_in: u64,
 }
 
-pub async fn get_docker_hub_auth_token(name: &str) -> Result<String, RegistryError> {
+pub async fn get_docker_hub_auth_token(name: &str) -> Result<String, NodeError> {
     let auth_url = format!("https://auth.docker.io/token?client_id=Pyrsia&service=registry.docker.io&scope=repository:library/{}:pull", name);
 
     let token: Bearer = get(auth_url)
-        .await
-        .map_err(RegistryError::from)?
+        .await?
         .json()
-        .await
-        .map_err(RegistryError::from)?;
+        .await?;
 
     Ok(token.token)
 }
@@ -40,8 +38,6 @@ pub async fn get_docker_hub_auth_token(name: &str) -> Result<String, RegistryErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::de::StdError;
-    use warp::Reply;
 
     macro_rules! async_test {
         ($e:expr) => {
@@ -50,18 +46,17 @@ mod tests {
     }
 
     #[test]
-    fn test_get_docker_hub_auth_token() -> Result<(), Box<dyn StdError>> {
+    fn test_get_docker_hub_auth_token() -> Result<(), NodeError> {
         let name = "alpine";
         let result = async_test!(get_docker_hub_auth_token(name));
         check_get_docker_hub_auth_token(result);
         Ok(())
     }
 
-    fn check_get_docker_hub_auth_token(result: Result<String, RegistryError>) {
+    fn check_get_docker_hub_auth_token(result: Result<String, NodeError>) {
         match result {
-            Ok(reply) => {
-                let response = reply.into_response();
-                assert_eq!(response.status(), 200);
+            Ok(token) => {
+                assert!(token.len() > 0);
             }
             Err(_) => {
                 assert!(false)

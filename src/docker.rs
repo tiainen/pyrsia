@@ -15,5 +15,4 @@
 */
 
 mod docker_hub_util;
-pub mod error_util;
 pub mod v2;

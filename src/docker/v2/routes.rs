@@ -15,68 +15,19 @@
    limitations under the License.
 */
 
-use crate::network::p2p;
+use super::handlers::blobs::get_blob;
+use super::handlers::manifests::get_manifest;
 
-use super::handlers::blobs::*;
-use super::handlers::manifests::*;
-use libp2p::PeerId;
-use std::collections::HashMap;
-use warp::Filter;
+use actix_web::{get, HttpResponse, Responder, Scope, web};
 
-pub fn make_docker_routes(
-    p2p_client: p2p::Client,
-    peer_id: Option<PeerId>,
-) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    let empty_json = "{}";
-    let v2_base = warp::path("v2")
-        .and(warp::get())
-        .and(warp::path::end())
-        .map(move || empty_json)
-        .with(warp::reply::with::header(
-            "Content-Length",
-            empty_json.len(),
-        ))
-        .with(warp::reply::with::header(
-            "Content-Type",
-            "application/json",
-        ));
+#[get("/")]
+async fn base() -> impl Responder {
+    HttpResponse::Ok().body("{}")
+}
 
-    let v2_manifests = warp::path!("v2" / "library" / String / "manifests" / String)
-        .and(warp::get().or(warp::head()).unify())
-        .and_then(fetch_manifest);
-    let v2_manifests_put_docker = warp::path!("v2" / "library" / String / "manifests" / String)
-        .and(warp::put())
-        .and(warp::header::exact(
-            "Content-Type",
-            "application/vnd.docker.distribution.manifest.v2+json",
-        ))
-        .and(warp::body::bytes())
-        .and_then(put_manifest);
-
-    let v2_blobs = warp::path!("v2" / "library" / String / "blobs" / String)
-        .and(warp::get().or(warp::head()).unify())
-        .and(warp::path::end())
-        .and_then(move |name, hash| handle_get_blobs(p2p_client.clone(), peer_id, name, hash));
-    let v2_blobs_post = warp::path!("v2" / "library" / String / "blobs" / "uploads")
-        .and(warp::post())
-        .and_then(handle_post_blob);
-    let v2_blobs_patch = warp::path!("v2" / "library" / String / "blobs" / "uploads" / String)
-        .and(warp::patch())
-        .and(warp::body::bytes())
-        .and_then(handle_patch_blob);
-    let v2_blobs_put = warp::path!("v2" / "library" / String / "blobs" / "uploads" / String)
-        .and(warp::put())
-        .and(warp::query::<HashMap<String, String>>())
-        .and(warp::body::bytes())
-        .and_then(handle_put_blob);
-
-    warp::any().and(
-        v2_base
-            .or(v2_manifests)
-            .or(v2_manifests_put_docker)
-            .or(v2_blobs)
-            .or(v2_blobs_post)
-            .or(v2_blobs_patch)
-            .or(v2_blobs_put),
-    )
+pub fn docker_service() -> Scope {
+    web::scope("v2")
+        .service(base)
+        .service(get_blob)
+        .service(get_manifest)
 }

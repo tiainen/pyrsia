@@ -26,7 +26,6 @@ pub mod network;
 pub mod node_api;
 pub mod node_manager;
 pub use node_manager::model; // Expose nested module at the crate level
-pub mod logging;
 pub mod util;
 
 // re-expose nested crates that need to be used together

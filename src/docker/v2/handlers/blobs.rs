@@ -17,27 +17,26 @@
 use super::handlers::*;
 use super::HashAlgorithm;
 use crate::docker::docker_hub_util::get_docker_hub_auth_token;
-use crate::docker::error_util::{RegistryError, RegistryErrorCode};
+use crate::network::app_state::AppState;
 use crate::network::p2p;
+use crate::util::error_util::{NodeError, NodeErrorType};
+
+use actix_web::{get, HttpResponse, Responder, web};
 use bytes::{Buf, Bytes};
 use libp2p::PeerId;
-use log::{debug, info, trace};
+use log::{debug, info};
 use reqwest::header;
-use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
 use std::result::Result;
 use std::str;
 use uuid::Uuid;
-use warp::{http::StatusCode, Rejection, Reply};
 
-pub async fn handle_get_blobs(
-    p2p_client: p2p::Client,
-    peer_id: Option<PeerId>,
-    name: String,
-    hash: String,
-) -> Result<impl Reply, Rejection> {
+#[get("/library/{name}/blobs/{hash}")]
+async fn get_blob(path: web::Path<(String, String)>, data: web::Data<AppState>) -> Result<impl Responder, NodeError> {
+    let (name, hash) = path.into_inner();
+
     debug!("Getting blob with hash : {:?}", hash);
     let blob_content;
 
@@ -54,98 +53,24 @@ pub async fn handle_get_blobs(
                 hash
             );
 
-            let blob_stored = get_blob_from_network(p2p_client, peer_id, &name, &hash).await?;
+            let blob_stored = get_blob_from_network(data.p2p_client.clone(), &name, &hash).await?;
             if blob_stored {
                 blob_content =
-                    get_artifact(&decoded_hash, HashAlgorithm::SHA256).map_err(|_| {
-                        warp::reject::custom(RegistryError {
-                            code: RegistryErrorCode::BlobUnknown,
-                        })
-                    })?;
+                    get_artifact(&decoded_hash, HashAlgorithm::SHA256)?;
             } else {
-                return Err(warp::reject::custom(RegistryError {
-                    code: RegistryErrorCode::Unknown("PYRSIA_ARTIFACT_STORAGE_ERROR".to_string()),
-                }));
+                return Err(NodeError {
+                    error_type: NodeErrorType::Custom("PYRSIA_ARTIFACT_STORAGE_ERROR".to_string()),
+                });
             }
         }
     }
 
-    debug!("Final Step: {:?} successfully retrieved!", hash);
-    Ok(warp::http::response::Builder::new()
-        .header("Content-Type", "application/octet-stream")
-        .status(StatusCode::OK)
-        .body(blob_content)
-        .unwrap())
-}
+    data.p2p_client.clone().provide(String::from(&hash)).await;
 
-pub async fn handle_post_blob(name: String) -> Result<impl Reply, Rejection> {
-    let id = Uuid::new_v4();
-
-    trace!(
-        "Getting ready to start new upload for {} - {}",
-        name,
-        id.to_string()
-    );
-
-    create_upload_directory(&name, &id.to_string()).map_err(RegistryError::from)?;
-
-    Ok(warp::http::response::Builder::new()
-        .header(
-            "Location",
-            format!("http://localhost:7878/v2/{}/blobs/uploads/{}", name, id),
-        )
-        .header("Range", "0-0")
-        .status(StatusCode::ACCEPTED)
-        .body("")
-        .unwrap())
-}
-
-pub async fn handle_patch_blob(
-    name: String,
-    id: String,
-    bytes: Bytes,
-) -> Result<impl Reply, Rejection> {
-    let blob_upload_dest = format!(
-        "/tmp/registry/docker/registry/v2/repositories/{}/_uploads/{}/data",
-        name, id
-    );
-
-    let append = append_to_blob(&blob_upload_dest, bytes).map_err(RegistryError::from)?;
-
-    let range = format!("{}-{}", append.0, append.0 + append.1 - 1);
-    debug!("Patch blob range: {}", range);
-
-    Ok(warp::http::response::Builder::new()
-        .header(
-            "Location",
-            format!("http://localhost:7878/v2/{}/blobs/uploads/{}", name, id),
-        )
-        .header("Range", &range)
-        .status(StatusCode::ACCEPTED)
-        .body("")
-        .unwrap())
-}
-
-pub async fn handle_put_blob(
-    name: String,
-    id: String,
-    params: HashMap<String, String>,
-    bytes: Bytes,
-) -> Result<impl Reply, Rejection> {
-    let digest = params.get("digest").ok_or(RegistryError {
-        code: RegistryErrorCode::Unknown(String::from("missing digest")),
-    })?;
-
-    store_blob_in_filesystem(&name, &id, digest, bytes).map_err(RegistryError::from)?;
-
-    Ok(warp::http::response::Builder::new()
-        .header(
-            "Location",
-            format!("http://localhost:7878/v2/{}/blobs/uploads/{}", name, digest),
-        )
-        .status(StatusCode::CREATED)
-        .body("")
-        .unwrap())
+    debug!("Final Step: {:?} successfully retrieved!", &hash);
+    Ok(HttpResponse::Ok()
+        .append_header(("Content-Type", "application/octet-stream"))
+        .body(blob_content))
 }
 
 pub fn append_to_blob(blob: &str, mut bytes: Bytes) -> std::io::Result<(u64, u64)> {
@@ -187,22 +112,20 @@ fn store_blob_in_filesystem(
     id: &str,
     digest: &str,
     bytes: Bytes,
-) -> Result<bool, Box<dyn std::error::Error>> {
+) -> Result<bool, NodeError> {
     let blob_upload_dest_dir = create_upload_directory(name, &id.to_string())?;
     let mut blob_upload_dest_data = blob_upload_dest_dir.clone();
     blob_upload_dest_data.push_str("/data");
     let append = append_to_blob(&blob_upload_dest_data, bytes)?;
 
     // check if there is enough local allocated disk space
-    let available_space = get_space_available(ARTIFACTS_DIR.as_str());
-    if available_space.is_err() {
-        return Err(available_space.err().unwrap().to_string().into());
-    }
-    if append.1 > available_space.unwrap() {
+    let available_space = get_space_available(ARTIFACTS_DIR.as_str())?;
+    if append.1 > available_space {
         return Err("Not enough space left to store artifact".into());
     }
+
     //put blob in artifact manager
-    let reader = File::open(blob_upload_dest_data.as_str()).unwrap();
+    let reader = File::open(blob_upload_dest_data.as_str())?;
 
     let push_result = put_artifact(
         hex::decode(&digest.get(7..).unwrap()).unwrap().as_ref(),
@@ -217,12 +140,13 @@ fn store_blob_in_filesystem(
 
 // Request the content of the artifact from the pyrsia network
 async fn get_blob_from_network(
-    p2p_client: p2p::Client,
-    peer_id: Option<PeerId>,
+    mut p2p_client: p2p::Client,
     name: &str,
     hash: &str,
-) -> Result<bool, Rejection> {
-    Ok(match peer_id {
+) -> Result<bool, NodeError> {
+    let providers = p2p_client.list_providers(String::from(hash)).await;
+    debug!("List of providers for {:?}: {:?}", &hash, providers);
+    Ok(match providers.iter().next() {
         Some(peer) => match get_blob_from_other_peer(p2p_client.clone(), peer, name, hash).await {
             true => true,
             false => get_blob_from_docker_hub(name, hash).await?,
@@ -234,7 +158,7 @@ async fn get_blob_from_network(
 // Request the content of the artifact from other peer
 async fn get_blob_from_other_peer(
     mut p2p_client: p2p::Client,
-    peer_id: PeerId,
+    peer_id: &PeerId,
     name: &str,
     hash: &str,
 ) -> bool {
@@ -284,27 +208,18 @@ async fn get_blob_from_other_peer(
     }
 }
 
-async fn get_blob_from_docker_hub(name: &str, hash: &str) -> Result<bool, RegistryError> {
+async fn get_blob_from_docker_hub(name: &str, hash: &str) -> Result<bool, NodeError> {
     debug!("Step 3: Retrieving {:?} from docker.io", hash);
     let token = get_docker_hub_auth_token(name).await?;
 
-    match get_blob_from_docker_hub_with_token(name, hash, token).await {
-        Ok(stored) => {
-            debug!(
-                "Step 3: {:?} successfully stored locally from docker.io",
-                hash
-            );
-            Ok(stored)
-        }
-        Err(error) => Err(error),
-    }
+    get_blob_from_docker_hub_with_token(name, hash, token).await
 }
 
 async fn get_blob_from_docker_hub_with_token(
     name: &str,
     hash: &str,
     token: String,
-) -> Result<bool, RegistryError> {
+) -> Result<bool, NodeError> {
     let url = format!(
         "https://registry-1.docker.io/v2/library/{}/blobs/{}",
         name, hash
@@ -314,13 +229,12 @@ async fn get_blob_from_docker_hub_with_token(
         .get(url)
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .send()
-        .await
-        .map_err(RegistryError::from)?;
+        .await?;
 
     debug!("Got blob from docker.io with status {}", response.status());
-    let bytes = response.bytes().await.map_err(RegistryError::from)?;
+    let bytes = response.bytes().await?;
 
     let id = Uuid::new_v4();
 
-    store_blob_in_filesystem(name, &id.to_string(), hash, bytes).map_err(RegistryError::from)
+    store_blob_in_filesystem(name, &id.to_string(), hash, bytes)
 }

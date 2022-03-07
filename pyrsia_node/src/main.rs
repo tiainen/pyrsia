@@ -16,21 +16,20 @@
 
 pub mod args;
 
-use pyrsia::docker::error_util::*;
-use pyrsia::docker::v2::routes::make_docker_routes;
-use pyrsia::logging::*;
+use pyrsia::docker::v2::routes::docker_service;
+use pyrsia::network::app_state::AppState;
 use pyrsia::network::handlers::{dial_other_peer, handle_request_artifact};
 use pyrsia::network::p2p::{self};
-use pyrsia::node_api::routes::make_node_routes;
+use pyrsia::node_api::routes::node_service;
 
+use actix_web::{App, HttpServer, web};
 use clap::Parser;
 use futures::StreamExt;
 use log::{debug, info};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use warp::Filter;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), std::io::Error> {
     pretty_env_logger::init();
 
     let args = args::parser::PyrsiaNodeArgs::parse();
@@ -63,25 +62,25 @@ async fn main() {
         port.parse::<u16>().unwrap(),
     );
 
-    let docker_routes = make_docker_routes(p2p_client.clone(), final_peer_id);
-    let node_api_routes = make_node_routes(p2p_client.clone());
-    let all_routes = docker_routes.or(node_api_routes);
-
-    let (addr, server) = warp::serve(
-        all_routes
-            .and(http::log_headers())
-            .recover(custom_recover)
-            .with(warp::log("pyrsia_registry")),
-    )
-    .bind_ephemeral(address);
+    let web_p2p_client = p2p_client.clone();
+    let server = HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(AppState {
+                p2p_client: web_p2p_client.clone(),
+            }))
+            .service(docker_service())
+            .service(node_service())
+    })
+    .disable_signals()
+    .bind(address).unwrap();
 
     info!(
         "Pyrsia Docker Node is now running on port {}:{}!",
-        addr.ip(),
-        addr.port()
+        server.addrs()[0].ip(),
+        server.addrs()[0].port(),
     );
 
-    tokio::spawn(server);
+    tokio::spawn(server.run());
 
     loop {
         if let Some(event) = p2p_events.next().await {

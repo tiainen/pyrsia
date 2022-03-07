@@ -14,5 +14,41 @@
    limitations under the License.
 */
 
-pub mod swarm;
-pub use crate::docker::error_util::*;
+use crate::network::app_state::AppState;
+use crate::node_manager::{handlers::*, model::cli::Status};
+use crate::util::error_util::NodeError;
+
+use actix_web::{get, HttpResponse, Responder, web};
+use log::debug;
+
+#[get("/peers")]
+async fn peers(data: web::Data<AppState>) -> impl Responder {
+    let p2p_peers = data.p2p_client.clone().list_peers().await;
+    debug!("Got received_peers: {:?}", p2p_peers);
+
+    let str_peers: Vec<String> = p2p_peers.into_iter().map(|p| p.to_string()).collect();
+    let str_peers_as_json = serde_json::to_string(&str_peers).unwrap();
+
+    HttpResponse::Ok().body(str_peers_as_json)
+}
+
+#[get("/status")]
+async fn status(data: web::Data<AppState>) -> Result<impl Responder, NodeError> {
+    let p2p_peers = data.p2p_client.clone().list_peers().await;
+    debug!("Got received_peers: {:?}", p2p_peers);
+
+    let art_count_result = get_arts_count()?;
+
+    let disk_space_result = disk_usage(ARTIFACTS_DIR.as_str())?;
+
+    let status = Status {
+        artifact_count: art_count_result,
+        peers_count: p2p_peers.len(),
+        disk_allocated: String::from(ALLOCATED_SPACE_FOR_ARTIFACTS),
+        disk_usage: format!("{:.4}", disk_space_result),
+    };
+
+    let status_as_json = serde_json::to_string(&status)?;
+
+    Ok(HttpResponse::Ok().body(status_as_json))
+}

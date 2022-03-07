@@ -17,22 +17,22 @@
 use async_trait::async_trait;
 use futures::channel::{mpsc, oneshot};
 use futures::prelude::*;
-use libp2p::core::either::EitherError;
 use libp2p::core::upgrade::{read_length_prefixed, write_length_prefixed, ProtocolName};
 use libp2p::core::{Multiaddr, PeerId};
+use libp2p::identify::{Identify, IdentifyConfig, IdentifyEvent};
 use libp2p::identity;
 use libp2p::kad::record::store::MemoryStore;
-use libp2p::kad::{GetClosestPeersOk, Kademlia, KademliaEvent, QueryId, QueryResult};
+use libp2p::kad::{GetClosestPeersOk, GetProvidersOk, Kademlia, KademliaEvent, QueryId, QueryResult};
 use libp2p::multiaddr::Protocol;
 use libp2p::request_response::{
     ProtocolSupport, RequestId, RequestResponse, RequestResponseCodec, RequestResponseEvent,
     RequestResponseMessage, ResponseChannel,
 };
-use libp2p::swarm::{ConnectionHandlerUpgrErr, SwarmBuilder, SwarmEvent};
+use libp2p::swarm::{SwarmBuilder, SwarmEvent};
 use libp2p::{NetworkBehaviour, Swarm};
 use log::{debug, info, warn};
 use std::collections::hash_map::Entry::Vacant;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::io;
@@ -41,11 +41,13 @@ use std::iter;
 pub async fn new() -> Result<(Client, impl Stream<Item = Event>, EventLoop), Box<dyn Error>> {
     let local_keys = identity::Keypair::generate_ed25519();
 
+    let identify_config = IdentifyConfig::new(String::from("ipfs/1.0.0"), local_keys.public().clone());
     let local_peer_id = local_keys.public().to_peer_id();
 
     let swarm = SwarmBuilder::new(
         libp2p::development_transport(local_keys).await?,
         ComposedBehaviour {
+            identify: Identify::new(identify_config),
             kademlia: Kademlia::new(local_peer_id, MemoryStore::new(local_peer_id)),
             request_response: RequestResponse::new(
                 FileExchangeCodec(),
@@ -107,7 +109,30 @@ impl Client {
         receiver.await.expect("Sender not to be dropped.")
     }
 
-    pub async fn list_peers(&mut self) -> Vec<PeerId> {
+    pub async fn provide(&mut self, hash: String) {
+        debug!("p2p::Client::provide {:?}", hash);
+
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(Command::Provide { hash, sender })
+            .await
+            .expect("Command receiver not to be dropped.");
+        receiver.await.expect("Sender not to be dropped.")
+    }
+
+    pub async fn list_providers(&mut self, hash: String) -> HashSet<PeerId> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(Command::ListProviders {
+                hash,
+                sender,
+            })
+            .await
+            .expect("Command receiver not to be dropped.");
+        receiver.await.expect("Sender not to be dropped.")
+    }
+
+    pub async fn list_peers(&mut self) -> HashSet<PeerId> {
         let (sender, receiver) = oneshot::channel();
         self.sender
             .send(Command::ListPeers {
@@ -130,14 +155,14 @@ impl Client {
 
     pub async fn request_artifact(
         &mut self,
-        peer: PeerId,
+        peer: &PeerId,
         hash: String,
     ) -> Result<Vec<u8>, Box<dyn Error + Send>> {
         debug!("p2p::Client::request_artifact {:?}: {:?}", peer, hash);
 
         let (sender, receiver) = oneshot::channel();
         self.sender
-            .send(Command::RequestArtifact { hash, peer, sender })
+            .send(Command::RequestArtifact { hash, peer: *peer, sender })
             .await
             .expect("Command receiver not to be dropped.");
         receiver.await.expect("Sender not to be dropped.")
@@ -158,7 +183,8 @@ impl Client {
 }
 
 type PendingDialMap = HashMap<PeerId, oneshot::Sender<Result<(), Box<dyn Error + Send>>>>;
-type PendingListPeersMap = HashMap<QueryId, oneshot::Sender<Vec<PeerId>>>;
+type PendingStartProvidingMap = HashMap<QueryId, oneshot::Sender<()>>;
+type PendingListPeersMap = HashMap<QueryId, oneshot::Sender<HashSet<PeerId>>>;
 type PendingRequestArtifactMap =
     HashMap<RequestId, oneshot::Sender<Result<Vec<u8>, Box<dyn Error + Send>>>>;
 
@@ -167,6 +193,8 @@ pub struct EventLoop {
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<Event>,
     pending_dial: PendingDialMap,
+    pending_start_providing: PendingStartProvidingMap,
+    pending_list_providers: PendingListPeersMap,
     pending_list_peers: PendingListPeersMap,
     pending_request_artifact: PendingRequestArtifactMap,
 }
@@ -182,6 +210,8 @@ impl EventLoop {
             command_receiver,
             event_sender,
             pending_dial: Default::default(),
+            pending_start_providing: Default::default(),
+            pending_list_providers: Default::default(),
             pending_list_peers: Default::default(),
             pending_request_artifact: Default::default(),
         }
@@ -209,7 +239,7 @@ impl EventLoop {
         &mut self,
         event: SwarmEvent<
             ComposedEvent,
-            EitherError<io::Error, ConnectionHandlerUpgrErr<io::Error>>,
+            impl Error,
         >,
     ) {
         match event {
@@ -224,7 +254,7 @@ impl EventLoop {
                     .pending_list_peers
                     .remove(&id)
                     .expect("Completed query to be previously pending.")
-                    .send(peers);
+                    .send(HashSet::from_iter(peers));
             }
             SwarmEvent::Behaviour(ComposedEvent::Kademlia(_)) => {}
             SwarmEvent::Behaviour(ComposedEvent::RequestResponse(
@@ -340,6 +370,23 @@ impl EventLoop {
                     }
                 }
             }
+            Command::Provide { hash, sender } => {
+                let query_id = self
+                    .swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .start_providing(hash.into_bytes().into())
+                    .expect("No store error.");
+                self.pending_start_providing.insert(query_id, sender);
+            }
+            Command::ListProviders { hash, sender } => {
+                let query_id = self
+                    .swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .get_providers(hash.into_bytes().into());
+                self.pending_list_providers.insert(query_id, sender);
+            }
             Command::ListPeers { peer_id, sender } => {
                 let query_id = self
                     .swarm
@@ -378,14 +425,22 @@ impl EventLoop {
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "ComposedEvent")]
 struct ComposedBehaviour {
+    identify: Identify,
     kademlia: Kademlia<MemoryStore>,
     request_response: RequestResponse<FileExchangeCodec>,
 }
 
 #[derive(Debug)]
 enum ComposedEvent {
+    Identify(IdentifyEvent),
     Kademlia(KademliaEvent),
     RequestResponse(RequestResponseEvent<ArtifactRequest, ArtifactResponse>),
+}
+
+impl From<IdentifyEvent> for ComposedEvent {
+    fn from(event: IdentifyEvent) -> Self {
+        ComposedEvent::Identify(event)
+    }
 }
 
 impl From<KademliaEvent> for ComposedEvent {
@@ -411,9 +466,17 @@ enum Command {
         peer_addr: Multiaddr,
         sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
     },
+    Provide {
+        hash: String,
+        sender: oneshot::Sender<()>,
+    },
+    ListProviders {
+        hash: String,
+        sender: oneshot::Sender<HashSet<PeerId>>,
+    },
     ListPeers {
         peer_id: PeerId,
-        sender: oneshot::Sender<Vec<PeerId>>,
+        sender: oneshot::Sender<HashSet<PeerId>>,
     },
     LookupBlob {
         hash: String,
@@ -435,6 +498,8 @@ impl Display for Command {
         let name = match self {
             Command::Listen { .. } => "Listen",
             Command::Dial { .. } => "Dial",
+            Command::Provide { .. } => "Provide",
+            Command::ListProviders { .. } => "ListProviders",
             Command::ListPeers { .. } => "ListPeers",
             Command::LookupBlob { .. } => "LookupBlob",
             Command::RequestArtifact { .. } => "RequestArtifact",
