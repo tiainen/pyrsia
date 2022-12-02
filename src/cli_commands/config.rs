@@ -14,13 +14,33 @@
    limitations under the License.
 */
 
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
-
 const CONF_FILE: &str = "pyrsia-cli";
+const ENV_VAR_PYRSIA_CONFIG_LOCATION_FOR_TEST: &str = "PYRSIA_CONFIG_LOCATION_FOR_TEST";
+
+struct ConfigLocation {
+    config_path: PathBuf,
+}
+
+impl ConfigLocation {
+    pub fn new() -> Result<Self, confy::ConfyError> {
+        let config_path = if cfg!(test) {
+            if let Ok(config_path_for_test) = std::env::var(ENV_VAR_PYRSIA_CONFIG_LOCATION_FOR_TEST)
+            {
+                PathBuf::from(config_path_for_test)
+            } else {
+                confy::get_configuration_file_path(CONF_FILE, None)?
+            }
+        } else {
+            confy::get_configuration_file_path(CONF_FILE, None)?
+        };
+        println!("PATH = {}", config_path.display());
+        Ok(Self { config_path })
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CliConfig {
@@ -54,8 +74,10 @@ impl PartialEq for CliConfig {
     }
 }
 
-pub fn add_config(new_cfg: CliConfig) -> Result<()> {
-    let mut cfg: CliConfig = confy::load(CONF_FILE, None)?;
+pub fn add_config(new_cfg: CliConfig) -> Result<(), confy::ConfyError> {
+    let cfg_location = ConfigLocation::new()?;
+
+    let mut cfg: CliConfig = confy::load_path(&cfg_location.config_path)?;
     if !new_cfg.host.is_empty() {
         cfg.host = new_cfg.host
     }
@@ -68,20 +90,21 @@ pub fn add_config(new_cfg: CliConfig) -> Result<()> {
         cfg.disk_allocated = new_cfg.disk_allocated
     }
 
-    confy::store(CONF_FILE, None, &cfg)?;
+    confy::store_path(&cfg_location.config_path, &cfg)?;
 
     Ok(())
 }
 
-pub fn get_config() -> Result<CliConfig> {
-    let cfg: CliConfig = confy::load(CONF_FILE, None)?;
+pub fn get_config() -> Result<CliConfig, confy::ConfyError> {
+    let cfg_location = ConfigLocation::new()?;
+
+    let cfg: CliConfig = confy::load_path(&cfg_location.config_path)?;
 
     Ok(cfg)
 }
 
-pub fn get_config_file_path() -> Result<PathBuf> {
-    let path_buf: PathBuf = confy::get_configuration_file_path(CONF_FILE, None)?;
-    Ok(path_buf)
+pub fn get_config_file_path() -> Result<PathBuf, confy::ConfyError> {
+    confy::get_configuration_file_path(CONF_FILE, None)
 }
 
 #[cfg(test)]
@@ -91,11 +114,14 @@ mod tests {
 
     #[test]
     fn test_config_file_update() {
-        let env_home_original = std::env::var("HOME").unwrap();
         let tmp_dir = tempfile::tempdir()
             .expect("could not create temporary directory")
             .into_path();
-        std::env::set_var("HOME", tmp_dir.to_str().unwrap());
+
+        std::env::set_var(
+            ENV_VAR_PYRSIA_CONFIG_LOCATION_FOR_TEST,
+            tmp_dir.join("pyrsia-cli.config"),
+        );
 
         let cli_config_1 = CliConfig {
             port: "7888".to_string(),
@@ -114,8 +140,7 @@ mod tests {
         let current_cli_config = get_config().expect("get_config failed");
         assert_eq!(current_cli_config.port, cli_config_2.port);
 
-        std::env::set_var("HOME", env_home_original);
-        std::fs::remove_dir_all(tmp_dir).expect("failed to clean up temporary directory");
+        std::env::remove_var(ENV_VAR_PYRSIA_CONFIG_LOCATION_FOR_TEST);
     }
 
     #[test]
