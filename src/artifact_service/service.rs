@@ -232,6 +232,8 @@ impl ArtifactService {
             }
         }?;
 
+        println!("ARTIFACT: {:?}", artifact);
+
         self.verify_artifact(&transparency_log, &artifact).await?;
 
         Ok(artifact)
@@ -421,7 +423,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_and_get_artifact() {
+        pretty_env_logger::init_timed();
+
         let tmp_dir = test_util::tests::setup();
+
+        println!("TMP_DIR = {:?}", &tmp_dir);
 
         let keypair = Keypair::generate();
 
@@ -467,6 +473,9 @@ mod tests {
             )
             .context("Error from put_artifact")
             .unwrap();
+
+        let contents = std::fs::read_to_string(&get_file_path()).unwrap();
+        println!("TEST FILE CONTENTS: {:?}", contents);
 
         // pull artifact
         let future = {
@@ -971,12 +980,17 @@ mod tests {
         test_util::tests::teardown(tmp_dir);
     }
 
-    fn get_file_reader() -> Result<File, anyhow::Error> {
+    fn get_file_path() -> PathBuf {
         // test artifact file in resources/test dir
         let mut curr_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         curr_dir.push("tests/resources/artifact_test.json");
+        curr_dir
+    }
 
-        let path = String::from(curr_dir.to_string_lossy());
+    fn get_file_reader() -> Result<File, anyhow::Error> {
+        let path = String::from(get_file_path().to_string_lossy());
+        println!("READING FILE FROM {:?}", path);
+
         let reader = File::open(path.as_str()).unwrap();
         Ok(reader)
     }
