@@ -59,7 +59,7 @@ pub fn config_add() -> anyhow::Result<()> {
         &valid_disk_space,
     );
 
-    config::add_config(new_cfg)
+    config::add_config(new_cfg).map_err(anyhow::Error::new)
 }
 
 pub fn config_edit(
@@ -96,7 +96,7 @@ pub fn config_edit(
     }
 
     if errors.is_empty() {
-        config::add_config(cli_config)
+        config::add_config(cli_config).map_err(anyhow::Error::new)
     } else {
         errors.into_iter().for_each(|x| println!("{}", x));
         Err(anyhow!("Invalid pyrsia config"))
