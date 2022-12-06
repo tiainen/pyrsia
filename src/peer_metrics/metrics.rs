@@ -83,6 +83,7 @@ mod tests {
 
         //first measure of CPU for benchmark
         let qm = get_cpu_stress() * CPU_STRESS_WEIGHT;
+        assert_ne!(0_f64, qm); //zero should never be returned here
 
         //set CPU on fire to measure stress
         let mut threads = vec![];
