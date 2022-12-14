@@ -14,7 +14,6 @@
    limitations under the License.
 */
 
-use anyhow::{anyhow, Result};
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -78,7 +77,7 @@ impl PartialEq for CliConfig {
     }
 }
 
-pub fn add_config(new_cfg: CliConfig) -> Result<()> {
+pub fn add_config(new_cfg: CliConfig) -> anyhow::Result<()> {
     let cfg_location = ConfigLocation::new()?;
 
     let mut cfg: CliConfig = confy::load_path(&cfg_location.config_path)?;
@@ -103,7 +102,7 @@ pub fn config_edit(
     host_name: Option<String>,
     port: Option<String>,
     disk_space: Option<String>,
-) -> Result<()> {
+) -> anyhow::Result<()> {
     let mut cli_config = get_config()?;
 
     let mut errors: Vec<String> = Vec::new();
@@ -133,7 +132,7 @@ pub fn config_edit(
         add_config(cli_config)
     } else {
         errors.into_iter().for_each(|x| println!("{}", x));
-        Err(anyhow!("Invalid pyrsia config"))
+        Err(anyhow::anyhow!("Invalid pyrsia config"))
     }
 }
 
