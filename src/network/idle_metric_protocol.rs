@@ -25,23 +25,23 @@ use std::io;
 /// The `IdleMetricExchangeCodec` defines the request and response types
 /// for the [`RequestResponse`](crate::RequestResponse) protocol for
 /// exchanging peer metrics. The peer metric is passed through the framework
-/// in the PeerMetrics structure but over the network as the bytes needed
+/// in the PeerMetricsData structure but over the network as the bytes needed
 /// for passing a floating point as bits of the idle metric field of the
-/// PeerMetrics structure.
+/// PeerMetricsData structure.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PeerMetrics {
+pub struct PeerMetricsData {
     pub idle_metric: [u8; 8],
 }
 
-impl PartialEq for PeerMetrics {
+impl PartialEq for PeerMetricsData {
     fn eq(&self, other: &Self) -> bool {
         self.idle_metric == other.idle_metric
     }
 }
 
-impl Eq for PeerMetrics {}
+impl Eq for PeerMetricsData {}
 
-impl AsRef<[u8]> for PeerMetrics {
+impl AsRef<[u8]> for PeerMetricsData {
     fn as_ref(&self) -> &[u8] {
         &self.idle_metric
     }
@@ -55,7 +55,7 @@ pub struct IdleMetricExchangeCodec();
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdleMetricRequest();
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdleMetricResponse(pub PeerMetrics);
+pub struct IdleMetricResponse(pub PeerMetricsData);
 
 impl ProtocolName for IdleMetricExchangeProtocol {
     fn protocol_name(&self) -> &[u8] {
@@ -102,12 +102,12 @@ impl RequestResponseCodec for IdleMetricExchangeCodec {
             return Err(io::ErrorKind::InvalidData.into());
         }
 
-        let metric = PeerMetrics { idle_metric: buff };
+        let peer_metrics_data = PeerMetricsData { idle_metric: buff };
         debug!(
             "p2p::idle_metric_protocol::read_response Reading response to idle metric request with value ={:?}",
-            metric.idle_metric
+            peer_metrics_data.idle_metric
         );
-        Ok(IdleMetricResponse(metric))
+        Ok(IdleMetricResponse(peer_metrics_data))
     }
 
     //this method request the idle metric from the peer

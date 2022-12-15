@@ -18,7 +18,7 @@ use crate::artifact_service::model::PackageType;
 use crate::network::artifact_protocol::ArtifactResponse;
 use crate::network::blockchain_protocol::BlockchainResponse;
 use crate::network::build_protocol::BuildResponse;
-use crate::network::idle_metric_protocol::{IdleMetricResponse, PeerMetrics};
+use crate::network::idle_metric_protocol::{IdleMetricResponse, PeerMetricsData};
 use crate::node_api::model::cli::Status;
 use libp2p::core::{Multiaddr, PeerId};
 use libp2p::request_response::ResponseChannel;
@@ -80,10 +80,10 @@ pub enum Command {
     },
     RequestIdleMetric {
         peer: PeerId,
-        sender: oneshot::Sender<anyhow::Result<PeerMetrics>>,
+        sender: oneshot::Sender<anyhow::Result<PeerMetricsData>>,
     },
     RespondIdleMetric {
-        metric: PeerMetrics,
+        peer_metrics_data: PeerMetricsData,
         channel: ResponseChannel<IdleMetricResponse>,
     },
     RequestBlockchain {

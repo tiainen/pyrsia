@@ -20,7 +20,9 @@ use crate::network::behaviour::{PyrsiaNetworkBehaviour, PyrsiaNetworkEvent};
 use crate::network::blockchain_protocol::{BlockchainRequest, BlockchainResponse};
 use crate::network::build_protocol::{BuildRequest, BuildResponse};
 use crate::network::client::command::Command;
-use crate::network::idle_metric_protocol::{IdleMetricRequest, IdleMetricResponse, PeerMetrics};
+use crate::network::idle_metric_protocol::{
+    IdleMetricRequest, IdleMetricResponse, PeerMetricsData,
+};
 use crate::node_api::model::cli::Status;
 use crate::util::env_util::read_var;
 use libp2p::autonat::{Event as AutonatEvent, NatStatus};
@@ -44,7 +46,8 @@ type PendingListPeersMap = HashMap<QueryId, oneshot::Sender<HashSet<PeerId>>>;
 type PendingStartProvidingMap = HashMap<QueryId, oneshot::Sender<()>>;
 type PendingRequestArtifactMap = HashMap<RequestId, oneshot::Sender<anyhow::Result<Vec<u8>>>>;
 type PendingRequestBuildMap = HashMap<RequestId, oneshot::Sender<anyhow::Result<String>>>;
-type PendingRequestIdleMetricMap = HashMap<RequestId, oneshot::Sender<anyhow::Result<PeerMetrics>>>;
+type PendingRequestIdleMetricMap =
+    HashMap<RequestId, oneshot::Sender<anyhow::Result<PeerMetricsData>>>;
 type PendingRequestBlockchainMap = HashMap<RequestId, oneshot::Sender<anyhow::Result<Vec<u8>>>>;
 
 /// The `PyrsiaEventLoop` is responsible for taking care of incoming
@@ -638,11 +641,14 @@ impl PyrsiaEventLoop {
                     .send_request(&peer, IdleMetricRequest());
                 self.pending_idle_metric_requests.insert(request_id, sender);
             }
-            Command::RespondIdleMetric { metric, channel } => {
+            Command::RespondIdleMetric {
+                peer_metrics_data,
+                channel,
+            } => {
                 self.swarm
                     .behaviour_mut()
                     .idle_metric_request_response
-                    .send_response(channel, IdleMetricResponse(metric))
+                    .send_response(channel, IdleMetricResponse(peer_metrics_data))
                     .expect("Connection to peer to be still open.");
             }
             Command::RequestBlockchain { data, peer, sender } => {

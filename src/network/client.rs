@@ -21,7 +21,7 @@ use crate::network::artifact_protocol::ArtifactResponse;
 use crate::network::blockchain_protocol::BlockchainResponse;
 use crate::network::build_protocol::BuildResponse;
 use crate::network::client::command::Command;
-use crate::network::idle_metric_protocol::{IdleMetricResponse, PeerMetrics};
+use crate::network::idle_metric_protocol::{IdleMetricResponse, PeerMetricsData};
 use crate::node_api::model::cli::Status;
 use libp2p::core::{Multiaddr, PeerId};
 use libp2p::request_response::ResponseChannel;
@@ -311,16 +311,19 @@ impl Client {
 
     pub async fn respond_idle_metric(
         &mut self,
-        metric: PeerMetrics,
+        peer_metrics_data: PeerMetricsData,
         channel: ResponseChannel<IdleMetricResponse>,
     ) -> anyhow::Result<()> {
         debug!(
-            "p2p::Client::respond_idle_metric PeerMetrics metric ={:?}",
-            metric
+            "p2p::Client::respond_idle_metric PeerMetricsData metric ={:?}",
+            peer_metrics_data
         );
 
         self.sender
-            .send(Command::RespondIdleMetric { metric, channel })
+            .send(Command::RespondIdleMetric {
+                peer_metrics_data,
+                channel,
+            })
             .await?;
 
         Ok(())
@@ -481,10 +484,10 @@ mod tests {
             command = receiver.recv() => match command {
                 Some(Command::RequestIdleMetric { peer, sender }) => {
                     assert_eq!(peer, local_peer_id);
-                    let peer_metric = PeerMetrics {
+                    let peer_metrics_data = PeerMetricsData {
                         idle_metric: 8675309f64.to_le_bytes(),
                     };
-                    let _ = sender.send(Ok(peer_metric));
+                    let _ = sender.send(Ok(peer_metrics_data));
                 },
                 None => {},
                 _ => panic!("Command must match Command::RequestIdleMetric")

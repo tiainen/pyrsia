@@ -359,7 +359,7 @@ mod tests {
     use crate::blockchain_service::service::BlockchainService;
     use crate::build_service::event::BuildEvent;
     use crate::network::client::command::Command;
-    use crate::network::idle_metric_protocol::PeerMetrics;
+    use crate::network::idle_metric_protocol::PeerMetricsData;
     use crate::util::test_util;
     use libp2p::identity::ed25519::Keypair;
     use libp2p::identity::PublicKey;
@@ -577,7 +577,7 @@ mod tests {
                         let _ = sender.send(set);
                     },
                     Some(Command::RequestIdleMetric { sender, .. }) => {
-                        let _ = sender.send(Ok(PeerMetrics {
+                        let _ = sender.send(Ok(PeerMetricsData {
                             idle_metric: (0.1_f64).to_le_bytes()
                         }));
                     },

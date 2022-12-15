@@ -15,32 +15,60 @@
 */
 
 /// Peer Quality Metrics
-use sysinfo::{NetworkExt, ProcessExt, System, SystemExt};
+use lazy_static::lazy_static;
+use std::sync::Mutex;
+use sysinfo::{
+    CpuRefreshKind, NetworkExt, ProcessExt, ProcessRefreshKind, RefreshKind, System, SystemExt,
+};
 
 // peer metric constants
 const CPU_STRESS_WEIGHT: f64 = 2_f64;
 const NETWORK_STRESS_WEIGHT: f64 = 0.001_f64;
 const DISK_STRESS_WEIGHT: f64 = 0.001_f64;
 
-/// Get the local stress metric to advertise to peers
-pub fn get_quality_metric() -> f64 {
-    let mut qm = get_cpu_stress() * CPU_STRESS_WEIGHT;
-    qm += get_network_stress() * NETWORK_STRESS_WEIGHT;
-    qm + get_disk_stress() * DISK_STRESS_WEIGHT
+lazy_static! {
+    pub static ref PEER_METRICS: Mutex<PeerMetrics> = Mutex::new(PeerMetrics::new());
+}
+
+#[derive(Default)]
+pub struct PeerMetrics {
+    system: System,
+}
+
+impl PeerMetrics {
+    pub fn new() -> Self {
+        Self {
+            system: System::new_with_specifics(
+                RefreshKind::new()
+                    .with_cpu(CpuRefreshKind::everything())
+                    .with_networks()
+                    .with_networks_list()
+                    .with_processes(ProcessRefreshKind::everything()),
+            ),
+        }
+    }
+
+    /// Get the local stress metric to advertise to peers
+    pub fn get_quality_metric(&mut self) -> f64 {
+        let mut qm = get_cpu_stress(&mut self.system) * CPU_STRESS_WEIGHT;
+        qm += get_network_stress(&mut self.system) * NETWORK_STRESS_WEIGHT;
+        qm + get_disk_stress(&mut self.system) * DISK_STRESS_WEIGHT
+    }
 }
 
 // This function gets the current CPU load on the system.
-fn get_cpu_stress() -> f64 {
-    let sys = System::new_all();
-    let load_avg = sys.load_average();
+fn get_cpu_stress(system: &mut System) -> f64 {
+    system.refresh_cpu_specifics(CpuRefreshKind::everything());
+
+    let load_avg = system.load_average();
     load_avg.one //using the average over the last 1 minute
 }
 
 // This function gets the current network load on the system
-fn get_network_stress() -> f64 {
-    let mut sys = System::new_all();
-    sys.refresh_networks_list();
-    let networks = sys.networks();
+fn get_network_stress(system: &mut System) -> f64 {
+    system.refresh_networks_list();
+
+    let networks = system.networks();
 
     let mut packets_in = 0;
     let mut packets_out = 0;
@@ -52,11 +80,12 @@ fn get_network_stress() -> f64 {
     //TODO: add network card capabilities to the metric. cards with > network capacity should get a lower stress number.
 }
 
-fn get_disk_stress() -> f64 {
-    let sys = System::new_all();
+fn get_disk_stress(system: &mut System) -> f64 {
+    system.refresh_processes();
+
     // Sum up the disk usage measured as total read and writes per process:
     let mut total_usage = 0_u64;
-    for process in sys.processes().values() {
+    for process in system.processes().values() {
         let usage = process.disk_usage();
         total_usage = total_usage + usage.total_written_bytes + usage.total_read_bytes;
     }
@@ -79,10 +108,12 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
+        let mut peer_metrics = PeerMetrics::new();
+
         let loading = Arc::new(AtomicBool::new(true));
 
         //first measure of CPU for benchmark
-        let qm = get_cpu_stress() * CPU_STRESS_WEIGHT;
+        let qm = get_cpu_stress(&mut peer_metrics.system) * CPU_STRESS_WEIGHT;
         assert_ne!(0_f64, qm); //zero should never be returned here
 
         //set CPU on fire to measure stress
@@ -102,7 +133,7 @@ mod tests {
         thread::sleep(Duration::from_millis(200)); //let cpu spin up
 
         //second measure of CPU
-        let qm2 = get_cpu_stress() * CPU_STRESS_WEIGHT;
+        let qm2 = get_cpu_stress(&mut peer_metrics.system) * CPU_STRESS_WEIGHT;
         assert!(qm2 >= qm);
         loading.store(false, Ordering::Relaxed); //kill threads
 
@@ -120,10 +151,12 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
+        let mut peer_metrics = PeerMetrics::new();
+
         let loading = Arc::new(AtomicBool::new(true));
 
         //fist measure of network for benchmark
-        let qm = get_network_stress() * NETWORK_STRESS_WEIGHT;
+        let qm = get_network_stress(&mut peer_metrics.system) * NETWORK_STRESS_WEIGHT;
 
         //shotgun the network with packets
         let mut threads = vec![];
@@ -142,7 +175,7 @@ mod tests {
             }));
         }
 
-        let qm2 = get_network_stress() * NETWORK_STRESS_WEIGHT;
+        let qm2 = get_network_stress(&mut peer_metrics.system) * NETWORK_STRESS_WEIGHT;
         assert!(qm2 > qm);
         loading.store(false, Ordering::Relaxed); //kill threads
 
@@ -163,11 +196,13 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
+        let mut peer_metrics = PeerMetrics::new();
+
         let loading = Arc::new(AtomicBool::new(true));
         let test_file = "pyrsia_test.txt";
 
         // fist measure of network for benchmark
-        let qm = get_disk_stress() * DISK_STRESS_WEIGHT;
+        let qm = get_disk_stress(&mut peer_metrics.system) * DISK_STRESS_WEIGHT;
 
         // write some data
         let write_thread = thread::spawn({
@@ -191,7 +226,7 @@ mod tests {
         thread::sleep(Duration::from_millis(400)); //let writes happen
 
         // second measure of network
-        let qm2 = get_disk_stress() * DISK_STRESS_WEIGHT;
+        let qm2 = get_disk_stress(&mut peer_metrics.system) * DISK_STRESS_WEIGHT;
         loading.store(false, Ordering::Relaxed); //kill thread
         write_thread.join().unwrap();
         fs::remove_file(test_file).unwrap();
@@ -202,7 +237,9 @@ mod tests {
 
     #[test]
     fn quality_metric_test() {
-        let quality_metric = get_quality_metric();
+        let mut peer_metrics = PeerMetrics::new();
+
+        let quality_metric = peer_metrics.get_quality_metric();
         assert!(quality_metric != 0_f64);
     }
 }
